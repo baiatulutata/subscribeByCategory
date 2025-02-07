@@ -32,11 +32,11 @@ function cbes_create_subscription_table()
 
 
 // Enqueue scripts and styles (for the form)
-function cbes_enqueue_scripts()
-{
+function cbes_enqueue_scripts() {
     wp_enqueue_script('cbes-script', plugin_dir_url(__FILE__) . 'cbes-script.js', array('jquery'), '1.0', true);
     wp_enqueue_style('cbes-style', plugin_dir_url(__FILE__) . 'cbes-style.css'); // Create this CSS file
-    wp_localize_script('cbes-script', 'cbes_ajax_object', array('ajax_url' => admin_url('admin-ajax.php')));
+
+    wp_localize_script('cbes-script', 'cbes_ajax_object', array('ajax_url' => admin_url('admin-ajax.php'))); // Pass AJAX URL
 }
 
 add_action('wp_enqueue_scripts', 'cbes_enqueue_scripts');
@@ -263,10 +263,48 @@ function cbes_subscribe_to_list($email, $list_id, $category_id)
         ),
         array('%s', '%d') // Data types for security
     );
-    print_r($wpdb->last_error);
+
     if ($result !== false) {
         // Optionally, you can still integrate with your email marketing service here.
-        // Example:  cbes_send_to_mailchimp($email, $list_id); // Your Mailchimp/other service function
+
+        // Mailchimp Integration (after successful database insert)
+        $api_key = get_option('cbes_mailchimp_api_key');
+        $mailchimp_list_id = get_option('cbes_mailchimp_list_id'); // Use the Mailchimp list ID from settings
+
+        if ($api_key && $mailchimp_list_id) { // Only if API key and list ID are set
+            $data = array(
+                'email_address' => $email,
+                'status' => 'subscribed', // or 'pending' for double opt-in
+            );
+
+            $ch = curl_init('https://usX.api.mailchimp.com/3.0/lists/' . $mailchimp_list_id . '/members'); // Replace X with your DC
+            curl_setopt_array($ch, array(
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_HTTPHEADER => array(
+                    'Authorization: Basic ' . base64_encode('any:' . $api_key),
+                    'Content-Type: application/json'
+                ),
+                CURLOPT_POST => true,
+                CURLOPT_POSTFIELDS => json_encode($data)
+            ));
+
+            $response = curl_exec($ch);
+            curl_close($ch);
+
+            $result = json_decode($response, true);
+            // You can add error handling here based on the Mailchimp API response
+            if (isset($result['status']) && ($result['status'] == 'subscribed' || $result['status'] == 'pending')) {
+                return true;
+            } else {
+                // Log the error or handle it as needed
+                error_log("Mailchimp subscription failed for $email: " . print_r($result, true));
+
+                return true; // Even if Mailchimp fails, the user is in the database.
+            }
+        } else {
+            return true; // If Mailchimp settings are not set, just return true (user is in the database)
+        }
+
         return true; // Database insert was successful
     } else {
         return false; // Database insert failed
@@ -434,6 +472,15 @@ function cbes_plugin_menu()
         'cbes-subscriptions', // Menu slug
         'cbes_subscriptions_page_content' // Callback function
     );
+    add_submenu_page(
+        'cbes-settings',
+        'Mailchimp Settings',
+        'Mailchimp Settings',
+        'manage_options',
+        'cbes-mailchimp-settings',
+        'cbes_mailchimp_settings_page_content'
+    );
+
 }
 
 add_action('admin_menu', 'cbes_plugin_menu');
@@ -473,6 +520,128 @@ add_action('admin_enqueue_scripts', 'cbes_enqueue_admin_styles');
 function cbes_enqueue_admin_styles()
 {
     wp_enqueue_style('cbes-admin-styles', plugin_dir_url(__FILE__) . 'cbes-admin-styles.css');
+}
+
+
+
+// Shortcode to Display Subscription Form
+function cbes_subscription_form_shortcode($atts) {
+    $atts = shortcode_atts(array(
+        'category_id' => null, // Allow specifying a category ID (optional)
+        'category_name' => null // Allow specifying a category name (optional)
+    ), $atts);
+
+    ob_start(); // Start output buffering
+
+    $is_active = get_option('cbes_is_active', true);
+    if ($is_active) {
+        if ($atts['category_id'] || $atts['category_name']) {
+            $category_id = $atts['category_id'];
+            $category_name = $atts['category_name'];
+
+            if ($category_name && !$category_id) { //if category name is provided but category id isn't
+                $category = get_term_by('name', $category_name, 'category');
+                if ($category) {
+                    $category_id = $category->term_id;
+                } else {
+                    echo "<p>Category with name '$category_name' not found.</p>";
+                    return ob_get_clean(); // Return buffered output
+                }
+            }
+            if ($category_id) {
+                $category = get_term($category_id);
+                if ($category && !is_wp_error($category)) {
+                    ?>
+                    <div id="cbes-subscription-form">
+                        <h3>Subscribe for more <?php echo esc_html($category->name); ?> content!</h3>
+                        <form id="cbes-form">
+                            <input type="hidden" name="category_id" value="<?php echo esc_attr($category_id); ?>" />
+                            <input type="email" name="email" placeholder="Your Email" required />
+                            <button type="submit">Subscribe</button>
+                            <div id="cbes-message"></div>
+                        </form>
+                    </div>
+                    <?php
+                } else {
+                    echo "<p>Category not found.</p>";
+                    return ob_get_clean(); // Return buffered output
+                }
+            }
+        } else {
+            // Display form for current post category (if on a single post page)
+            if (is_single()) {
+                $categories = get_the_category();
+                if ($categories) {
+                    $category_id = $categories[0]->term_id;
+                    $category_name = $categories[0]->name;
+
+                    ?>
+                    <div id="cbes-subscription-form">
+                        <h3>Subscribe for more <?php echo esc_html($category_name); ?> content!</h3>
+                        <form id="cbes-form">
+                            <input type="hidden" name="category_id" value="<?php echo esc_attr($category_id); ?>" />
+                            <input type="email" name="email" placeholder="Your Email" required />
+                            <button type="submit">Subscribe</button>
+                            <div id="cbes-message"></div>
+                        </form>
+                    </div>
+                    <?php
+                }
+            } else {
+                echo "<p>Please specify a category or use this shortcode on a single post page.</p>";
+            }
+        }
+    }
+
+    return ob_get_clean(); // Return the buffered output
+}
+add_shortcode('cbes_subscription_form', 'cbes_subscription_form_shortcode');
+
+// Mailchimp Settings Page
+function cbes_mailchimp_settings_page_content() {
+    ?>
+    <div class="wrap">
+        <h1>Mailchimp Settings</h1>
+        <form method="post" action="options.php">
+            <?php
+            settings_fields('cbes_mailchimp_settings_group'); // New settings group
+            do_settings_sections('cbes-mailchimp-settings'); // New settings section
+            submit_button();
+            ?>
+        </form>
+    </div>
+    <?php
+}
+
+// Register Mailchimp Settings
+add_action('admin_init', 'cbes_register_mailchimp_settings');
+
+
+function cbes_register_mailchimp_settings() {
+    register_setting('cbes_mailchimp_settings_group', 'cbes_mailchimp_api_key', 'sanitize_text_field');
+    register_setting('cbes_mailchimp_settings_group', 'cbes_mailchimp_list_id', 'sanitize_text_field');
+
+    add_settings_section(
+        'cbes_mailchimp_settings_section',
+        'Mailchimp API Credentials',
+        'cbes_mailchimp_settings_section_callback',
+        'cbes-mailchimp-settings'
+    );
+}
+
+function cbes_mailchimp_settings_section_callback() {
+
+    echo 'Enter your Mailchimp API key and List ID below.';
+    $api_key = get_option('cbes_mailchimp_api_key', '');
+    $list_id = get_option('cbes_mailchimp_list_id', '');
+    ?>
+    <label for="cbes_mailchimp_api_key">API Key:</label>
+    <input type="text" name="cbes_mailchimp_api_key" id="cbes_mailchimp_api_key" value="<?php echo esc_attr($api_key); ?>" class="regular-text" /><br>
+
+    <label for="cbes_mailchimp_list_id">List ID:</label>
+    <input type="text" name="cbes_mailchimp_list_id" id="cbes_mailchimp_list_id" value="<?php echo esc_attr($list_id); ?>" class="regular-text" />
+    <span>Don't fill this info if you don't want to connect with mailchimp.</span>
+    <?php
 }
 
 ?>

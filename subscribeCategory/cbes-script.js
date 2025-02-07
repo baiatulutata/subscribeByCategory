@@ -1,9 +1,10 @@
 jQuery(document).ready(function($) {
     $('#cbes-form').submit(function(e) {
         e.preventDefault();
-        $('#cbes-message').html('Submitting...'); // Show a message
+        $('#cbes-message').html('Submitting...');
+
         $.ajax({
-            url: cbes_ajax_object.ajax_url,
+            url: cbes_ajax_object.ajax_url, // Use localized AJAX URL
             type: 'POST',
             data: {
                 action: 'cbes_subscribe',
@@ -13,12 +14,12 @@ jQuery(document).ready(function($) {
             success: function(response) {
                 $('#cbes-message').html(response.data.message);
                 if (response.success) {
-                    $('#cbes-form')[0].reset(); // Clear the form on success
+                    $('#cbes-form')[0].reset();
                 }
             },
             error: function(response) {
                 $('#cbes-message').html('An error occurred. Please try again.');
-                console.error(response); // Log the error for debugging
+                console.error(response);
             }
         });
     });
